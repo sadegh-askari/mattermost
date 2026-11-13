@@ -399,10 +399,11 @@ func (a *App) MFARequired(rctx request.CTX) *model.AppError {
 	if user.IsGuest() && !*a.Config().GuestAccountsSettings.EnforceMultifactorAuthentication {
 		return nil
 	}
-	// Only required for email and ldap accounts
+	// Only require local MFA for accounts that can authenticate with a local password or LDAP.
 	if user.AuthService != "" &&
 		user.AuthService != model.UserAuthServiceEmail &&
-		user.AuthService != model.UserAuthServiceLdap {
+		user.AuthService != model.UserAuthServiceLdap &&
+		!user.CanAuthenticateWithPassword() {
 		return nil
 	}
 
@@ -469,7 +470,7 @@ func (a *App) authenticateUser(rctx request.CTX, user *model.User, password, mfa
 		return ldapUser, nil
 	}
 
-	if user.AuthService != "" {
+	if !user.CanAuthenticateWithPassword() {
 		authService := user.AuthService
 		if authService == model.UserAuthServiceSaml {
 			authService = strings.ToUpper(authService)

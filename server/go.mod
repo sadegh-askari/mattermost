@@ -239,3 +239,8 @@ replace github.com/vmihailenco/msgpack/v5 => github.com/mattermost/msgpack/v5 v5
 
 // See MM-63434 for more details.
 replace github.com/ledongthuc/pdf => github.com/jgheithcock/pdf v0.0.0-20260404175814-28cd6530c1fe
+
+// OIDC SSO Provider - local development
+require github.com/toowoxx/mattermost-oidc v0.0.0
+
+replace github.com/toowoxx/mattermost-oidc => ../third_party/mattermost-oidc

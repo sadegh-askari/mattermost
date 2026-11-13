@@ -1,0 +1,43 @@
+ARG MM_VERSION=11.10.0
+ARG RUNTIME_IMAGE=sadeghdev/mattermost-oidc@sha256:42eb5d0049dbcff0046cb57423260b825b5d6a47d99d673a18729b877ad952c3
+
+FROM --platform=$BUILDPLATFORM golang:1.26.4-alpine AS server-builder
+
+ARG MM_VERSION
+ARG TARGETARCH
+ARG MM_BUILD_HASH=local
+
+RUN apk add --no-cache git gcc musl-dev
+
+WORKDIR /build
+COPY server/ ./server/
+COPY third_party/mattermost-oidc/ ./third_party/mattermost-oidc/
+
+RUN go work init ./server ./server/public ./third_party/mattermost-oidc
+
+RUN rm -rf /build/server/enterprise \
+    && sed -i '/Enterprise Imports/d; /github.com\/mattermost\/mattermost\/server\/v8\/enterprise/d' \
+       /build/server/cmd/mattermost/main.go
+
+WORKDIR /build/server
+ENV GOPRIVATE=github.com/mattermost/* \
+    GONOSUMDB=github.com/mattermost/* \
+    GONOPROXY=github.com/mattermost/* \
+    GOMAXPROCS=2 \
+    GOFLAGS=-p=2
+
+RUN GOOS=linux GOARCH=${TARGETARCH:-amd64} CGO_ENABLED=0 \
+    go build -trimpath \
+    -ldflags "-s -w -X github.com/mattermost/mattermost/server/public/model.BuildNumber=${MM_VERSION} -X github.com/mattermost/mattermost/server/public/model.BuildHash=${MM_BUILD_HASH}" \
+    -o bin/mattermost ./cmd/mattermost
+
+FROM --platform=linux/amd64 ${RUNTIME_IMAGE} AS runtime
+
+USER root
+COPY --from=server-builder /build/server/bin/mattermost /mattermost/bin/mattermost
+RUN chown mattermost:mattermost /mattermost/bin/mattermost
+
+USER mattermost
+WORKDIR /mattermost
+EXPOSE 8065
+CMD ["mattermost", "server"]

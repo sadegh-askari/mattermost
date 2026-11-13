@@ -12,6 +12,9 @@ import (
 	// Plugins
 	_ "github.com/mattermost/mattermost/server/v8/channels/app/oauthproviders/gitlab"
 
+	// OIDC SSO Provider
+	_ "github.com/toowoxx/mattermost-oidc/openid"
+
 	// Enterprise Imports
 	_ "github.com/mattermost/mattermost/server/v8/enterprise"
 )

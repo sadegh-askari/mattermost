@@ -431,7 +431,7 @@ func (u *User) IsValid() *AppError {
 		return InvalidUserError("auth_data_type", u.Id, *u.AuthData+" "+u.AuthService)
 	}
 
-	if u.Password != "" && u.AuthData != nil && *u.AuthData != "" {
+	if u.Password != "" && u.AuthData != nil && *u.AuthData != "" && !u.HasDualOpenIDCredentials() {
 		return InvalidUserError("auth_data_pwd", u.Id, *u.AuthData)
 	}
 
@@ -919,6 +919,22 @@ func IsInRole(userRoles string, inRole string) bool {
 
 func (u *User) IsSSOUser() bool {
 	return u.AuthService != "" && u.AuthService != UserAuthServiceEmail
+}
+
+// HasDualOpenIDCredentials reports whether this account has both a local
+// Mattermost password and an OpenID Connect identity. Other external auth
+// providers remain exclusive, matching Mattermost's normal account model.
+func (u *User) HasDualOpenIDCredentials() bool {
+	return u.AuthService == ServiceOpenid &&
+		u.AuthData != nil && *u.AuthData != "" &&
+		u.Password != ""
+}
+
+// CanAuthenticateWithPassword reports whether the account can use the local
+// password flow. OpenID accounts can do so only when both credentials are
+// explicitly present on the same account.
+func (u *User) CanAuthenticateWithPassword() bool {
+	return u.AuthService == "" || u.AuthService == UserAuthServiceEmail || u.HasDualOpenIDCredentials()
 }
 
 func (u *User) IsOAuthUser() bool {

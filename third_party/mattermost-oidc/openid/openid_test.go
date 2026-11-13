@@ -1,0 +1,421 @@
+// Copyright (c) 2026 Toowoxx IT GmbH
+// Licensed under the AGPL-3.0 license. See LICENSE for details.
+
+package openid
+
+import (
+	"bytes"
+	"log"
+	"strings"
+	"testing"
+
+	"github.com/mattermost/mattermost/server/public/model"
+	"github.com/mattermost/mattermost/server/public/shared/mlog"
+)
+
+// mockLogger implements mlog.LoggerIFace for testing
+type mockLogger struct{}
+
+func (m *mockLogger) IsLevelEnabled(level mlog.Level) bool                       { return true }
+func (m *mockLogger) Trace(msg string, fields ...mlog.Field)                     {}
+func (m *mockLogger) Debug(msg string, fields ...mlog.Field)                     {}
+func (m *mockLogger) Info(msg string, fields ...mlog.Field)                      {}
+func (m *mockLogger) Warn(msg string, fields ...mlog.Field)                      {}
+func (m *mockLogger) Error(msg string, fields ...mlog.Field)                     {}
+func (m *mockLogger) Critical(msg string, fields ...mlog.Field)                  {}
+func (m *mockLogger) Fatal(msg string, fields ...mlog.Field)                     {}
+func (m *mockLogger) Log(level mlog.Level, msg string, fields ...mlog.Field)     {}
+func (m *mockLogger) LogM(levels []mlog.Level, msg string, fields ...mlog.Field) {}
+func (m *mockLogger) With(fields ...mlog.Field) *mlog.Logger                     { return nil }
+func (m *mockLogger) Flush() error                                               { return nil }
+func (m *mockLogger) Sugar(fields ...mlog.Field) mlog.Sugar                      { return mlog.Sugar{} }
+func (m *mockLogger) StdLogger(level mlog.Level) *log.Logger                     { return nil }
+
+// Test claims parsing with all fields
+func TestParseOIDCClaims_AllFields(t *testing.T) {
+	jsonData := `{
+		"sub": "user-123",
+		"email": "test@example.com",
+		"email_verified": true,
+		"preferred_username": "testuser",
+		"given_name": "Test",
+		"family_name": "User",
+		"name": "Test User",
+		"picture": "https://example.com/photo.jpg"
+	}`
+
+	claims, err := ParseOIDCClaims(strings.NewReader(jsonData))
+	if err != nil {
+		t.Fatalf("Failed to parse claims: %v", err)
+	}
+
+	if claims.Sub != "user-123" {
+		t.Errorf("Expected sub 'user-123', got '%s'", claims.Sub)
+	}
+	if claims.Email != "test@example.com" {
+		t.Errorf("Expected email 'test@example.com', got '%s'", claims.Email)
+	}
+	if !claims.EmailVerified {
+		t.Error("Expected email_verified to be true")
+	}
+	if claims.PreferredUsername != "testuser" {
+		t.Errorf("Expected preferred_username 'testuser', got '%s'", claims.PreferredUsername)
+	}
+	if claims.GivenName != "Test" {
+		t.Errorf("Expected given_name 'Test', got '%s'", claims.GivenName)
+	}
+	if claims.FamilyName != "User" {
+		t.Errorf("Expected family_name 'User', got '%s'", claims.FamilyName)
+	}
+}
+
+// Test claims validation
+func TestOIDCClaims_Validate(t *testing.T) {
+	tests := []struct {
+		name    string
+		claims  OIDCClaims
+		wantErr bool
+	}{
+		{
+			name: "valid claims",
+			claims: OIDCClaims{
+				Sub:   "user-123",
+				Email: "test@example.com",
+			},
+			wantErr: false,
+		},
+		{
+			name: "missing sub",
+			claims: OIDCClaims{
+				Email: "test@example.com",
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing email",
+			claims: OIDCClaims{
+				Sub: "user-123",
+			},
+			wantErr: true,
+		},
+		{
+			name:    "empty claims",
+			claims:  OIDCClaims{},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.claims.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// Test conversion to Mattermost user
+func TestOIDCClaims_ToUser(t *testing.T) {
+	logger := &mockLogger{}
+
+	tests := []struct {
+		name              string
+		claims            OIDCClaims
+		wantUsername      string
+		wantFirstName     string
+		wantLastName      string
+		wantEmail         string
+		wantAuthData      string
+		wantEmailVerified bool
+	}{
+		{
+			name: "all fields present with verified email",
+			claims: OIDCClaims{
+				Sub:               "user-123",
+				Email:             "Test@Example.com",
+				EmailVerified:     true,
+				PreferredUsername: "testuser",
+				GivenName:         "Test",
+				FamilyName:        "User",
+			},
+			wantUsername:      "testuser",
+			wantFirstName:     "Test",
+			wantLastName:      "User",
+			wantEmail:         "test@example.com", // Lowercase
+			wantAuthData:      "user-123",
+			wantEmailVerified: true,
+		},
+		{
+			name: "username from email, unverified",
+			claims: OIDCClaims{
+				Sub:   "user-456",
+				Email: "john.doe@example.com",
+			},
+			wantUsername:      "john.doe",
+			wantFirstName:     "",
+			wantLastName:      "",
+			wantEmail:         "john.doe@example.com",
+			wantAuthData:      "user-456",
+			wantEmailVerified: false,
+		},
+		{
+			name: "name split fallback",
+			claims: OIDCClaims{
+				Sub:           "user-789",
+				Email:         "test@example.com",
+				EmailVerified: true,
+				Name:          "John Doe Smith",
+			},
+			wantUsername:      "test",
+			wantFirstName:     "John",
+			wantLastName:      "Doe Smith",
+			wantEmail:         "test@example.com",
+			wantAuthData:      "user-789",
+			wantEmailVerified: true,
+		},
+		{
+			name: "single name",
+			claims: OIDCClaims{
+				Sub:           "user-abc",
+				Email:         "test@example.com",
+				EmailVerified: true,
+				Name:          "Madonna",
+			},
+			wantUsername:      "test",
+			wantFirstName:     "Madonna",
+			wantLastName:      "",
+			wantEmail:         "test@example.com",
+			wantAuthData:      "user-abc",
+			wantEmailVerified: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			user := tt.claims.ToUser(logger)
+
+			if user.Username != tt.wantUsername {
+				t.Errorf("Username = %s, want %s", user.Username, tt.wantUsername)
+			}
+			if user.FirstName != tt.wantFirstName {
+				t.Errorf("FirstName = %s, want %s", user.FirstName, tt.wantFirstName)
+			}
+			if user.LastName != tt.wantLastName {
+				t.Errorf("LastName = %s, want %s", user.LastName, tt.wantLastName)
+			}
+			if user.Email != tt.wantEmail {
+				t.Errorf("Email = %s, want %s", user.Email, tt.wantEmail)
+			}
+			if user.AuthData == nil || *user.AuthData != tt.wantAuthData {
+				t.Errorf("AuthData = %v, want %s", user.AuthData, tt.wantAuthData)
+			}
+			if user.AuthService != model.ServiceOpenid {
+				t.Errorf("AuthService = %s, want %s", user.AuthService, model.ServiceOpenid)
+			}
+			if user.EmailVerified != tt.wantEmailVerified {
+				t.Errorf("EmailVerified = %v, want %v", user.EmailVerified, tt.wantEmailVerified)
+			}
+		})
+	}
+}
+
+// Test discovery endpoint construction
+func TestDiscoveryEndpointFromIssuer(t *testing.T) {
+	tests := []struct {
+		issuer string
+		want   string
+	}{
+		{
+			issuer: "https://keycloak.example.com/realms/main",
+			want:   "https://keycloak.example.com/realms/main/.well-known/openid-configuration",
+		},
+		{
+			issuer: "https://keycloak.example.com/realms/main/",
+			want:   "https://keycloak.example.com/realms/main/.well-known/openid-configuration",
+		},
+		{
+			issuer: "https://auth0.com",
+			want:   "https://auth0.com/.well-known/openid-configuration",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.issuer, func(t *testing.T) {
+			got := DiscoveryEndpointFromIssuer(tt.issuer)
+			if got != tt.want {
+				t.Errorf("DiscoveryEndpointFromIssuer(%s) = %s, want %s", tt.issuer, got, tt.want)
+			}
+		})
+	}
+}
+
+// Test IsSameUser
+func TestOpenIDProvider_IsSameUser(t *testing.T) {
+	provider := &OpenIDProvider{}
+
+	sub1 := "user-123"
+	sub2 := "user-456"
+	gitlabID := "gitlab-id-789"
+
+	tests := []struct {
+		name      string
+		dbUser    *model.User
+		oauthUser *model.User
+		want      bool
+	}{
+		// Case 1: Same provider, same AuthData
+		{
+			name:      "same OIDC user",
+			dbUser:    &model.User{AuthService: model.ServiceOpenid, AuthData: &sub1},
+			oauthUser: &model.User{AuthService: model.ServiceOpenid, AuthData: &sub1},
+			want:      true,
+		},
+		// Case 1: Same provider, different AuthData — different person
+		{
+			name:      "different OIDC user",
+			dbUser:    &model.User{AuthService: model.ServiceOpenid, AuthData: &sub1},
+			oauthUser: &model.User{AuthService: model.ServiceOpenid, AuthData: &sub2},
+			want:      false,
+		},
+		// Cross-provider email matches require an explicit AuthData mapping.
+		{
+			name:      "gitlab email match is not an identity link",
+			dbUser:    &model.User{Email: "user@example.com", AuthService: "gitlab", AuthData: &gitlabID},
+			oauthUser: &model.User{Email: "user@example.com", AuthService: model.ServiceOpenid, AuthData: &sub1},
+			want:      false,
+		},
+		// Cross-provider email matches require an explicit AuthData mapping.
+		{
+			name:      "google email match is not an identity link",
+			dbUser:    &model.User{Email: "user@example.com", AuthService: "google", AuthData: &gitlabID},
+			oauthUser: &model.User{Email: "user@example.com", AuthService: model.ServiceOpenid, AuthData: &sub1},
+			want:      false,
+		},
+		// Email/password account links are performed by the reviewed DB map.
+		{
+			name:      "email auth email match is not an identity link",
+			dbUser:    &model.User{Email: "user@example.com", AuthService: "email", AuthData: &gitlabID},
+			oauthUser: &model.User{Email: "user@example.com", AuthService: model.ServiceOpenid, AuthData: &sub1},
+			want:      false,
+		},
+		// Reject: already OIDC with different sub (different person)
+		{
+			name:      "already OIDC different sub",
+			dbUser:    &model.User{Email: "user@example.com", AuthService: model.ServiceOpenid, AuthData: &sub2},
+			oauthUser: &model.User{Email: "user@example.com", AuthService: model.ServiceOpenid, AuthData: &sub1},
+			want:      false,
+		},
+		// Password accounts with an empty auth service require explicit linking.
+		{
+			name:      "empty auth service email match is not an identity link",
+			dbUser:    &model.User{Email: "user@example.com", AuthService: "", AuthData: nil},
+			oauthUser: &model.User{Email: "user@example.com", AuthService: model.ServiceOpenid, AuthData: &sub1},
+			want:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := provider.IsSameUser(nil, tt.dbUser, tt.oauthUser)
+			if got != tt.want {
+				t.Errorf("IsSameUser() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// Test GetUserFromJSON
+func TestOpenIDProvider_GetUserFromJSON(t *testing.T) {
+	provider := &OpenIDProvider{}
+
+	jsonData := `{
+		"sub": "user-123",
+		"email": "test@example.com",
+		"preferred_username": "testuser",
+		"given_name": "Test",
+		"family_name": "User"
+	}`
+
+	// Create a mock context
+	user, err := provider.GetUserFromJSON(nil, bytes.NewReader([]byte(jsonData)), nil, nil)
+	if err != nil {
+		t.Fatalf("GetUserFromJSON failed: %v", err)
+	}
+
+	if user.Email != "test@example.com" {
+		t.Errorf("Email = %s, want test@example.com", user.Email)
+	}
+	if *user.AuthData != "user-123" {
+		t.Errorf("AuthData = %s, want user-123", *user.AuthData)
+	}
+}
+
+// Test GetUserFromJSON with invalid JSON
+func TestOpenIDProvider_GetUserFromJSON_InvalidJSON(t *testing.T) {
+	provider := &OpenIDProvider{}
+
+	_, err := provider.GetUserFromJSON(nil, strings.NewReader("invalid json"), nil, nil)
+	if err == nil {
+		t.Error("Expected error for invalid JSON")
+	}
+}
+
+// Test GetUserFromJSON with missing required claims
+func TestOpenIDProvider_GetUserFromJSON_MissingClaims(t *testing.T) {
+	provider := &OpenIDProvider{}
+
+	// Missing sub
+	jsonData := `{"email": "test@example.com"}`
+	_, err := provider.GetUserFromJSON(nil, strings.NewReader(jsonData), nil, nil)
+	if err == nil {
+		t.Error("Expected error for missing sub claim")
+	}
+
+	// Missing email
+	jsonData = `{"sub": "user-123"}`
+	_, err = provider.GetUserFromJSON(nil, strings.NewReader(jsonData), nil, nil)
+	if err == nil {
+		t.Error("Expected error for missing email claim")
+	}
+}
+
+// Test email normalization
+func TestNormalizeEmail(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"Test@Example.com", "test@example.com"},
+		{"  test@example.com  ", "test@example.com"},
+		{"TEST@EXAMPLE.COM", "test@example.com"},
+		{"test@example.com", "test@example.com"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := NormalizeEmail(tt.input)
+			if got != tt.want {
+				t.Errorf("NormalizeEmail(%s) = %s, want %s", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// Benchmark claims parsing
+func BenchmarkParseOIDCClaims(b *testing.B) {
+	jsonData := `{
+		"sub": "user-123",
+		"email": "test@example.com",
+		"email_verified": true,
+		"preferred_username": "testuser",
+		"given_name": "Test",
+		"family_name": "User",
+		"name": "Test User"
+	}`
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ParseOIDCClaims(strings.NewReader(jsonData))
+	}
+}

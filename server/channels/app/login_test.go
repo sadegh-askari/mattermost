@@ -57,6 +57,56 @@ func TestCWSLogin(t *testing.T) {
 	})
 }
 
+func TestDualPasswordAndOpenIDAuthentication(t *testing.T) {
+	mainHelper.Parallel(t)
+	th := Setup(t).InitBasic(t)
+
+	th.UpdateConfig(t, func(config *model.Config) {
+		config.EmailSettings.EnableSignInWithEmail = new(true)
+		config.EmailSettings.EnableSignInWithUsername = new(true)
+	})
+
+	localPassword := model.NewTestPassword()
+	userID := model.NewId()
+	user, appErr := th.App.CreateUser(th.Context, &model.User{
+		Email:    "dual-auth-" + userID + "@example.com",
+		Username: "dual_auth_" + userID,
+		Password: localPassword,
+	})
+	require.Nil(t, appErr)
+
+	subject := "keycloak-subject-" + userID
+	_, err := th.App.Srv().Store().User().UpdateAuthData(user.Id, model.ServiceOpenid, &subject, "", false)
+	require.NoError(t, err)
+
+	linkedUser, appErr := th.App.GetUser(user.Id)
+	require.Nil(t, appErr)
+	require.Equal(t, model.ServiceOpenid, linkedUser.AuthService)
+	require.Equal(t, subject, *linkedUser.AuthData)
+	require.NotEmpty(t, linkedUser.Password, "linking Keycloak must preserve the existing password hash")
+	require.True(t, linkedUser.HasDualOpenIDCredentials())
+	require.Nil(t, linkedUser.IsValid())
+
+	passwordLogin, appErr := th.App.AuthenticateUserForLogin(th.Context, user.Id, "", localPassword, "", "", false)
+	require.Nil(t, appErr)
+	require.Equal(t, user.Id, passwordLogin.Id)
+
+	keycloakLookup, appErr := th.App.GetUserByAuth(&subject, model.ServiceOpenid)
+	require.Nil(t, appErr)
+	require.Equal(t, user.Id, keycloakLookup.Id)
+
+	newPassword := model.NewTestPassword()
+	require.Nil(t, th.App.UpdatePassword(th.Context, linkedUser, newPassword))
+	updatedUser, appErr := th.App.GetUser(user.Id)
+	require.Nil(t, appErr)
+	require.Equal(t, model.ServiceOpenid, updatedUser.AuthService)
+	require.Equal(t, subject, *updatedUser.AuthData, "changing the local password must not unlink Keycloak")
+
+	passwordLogin, appErr = th.App.AuthenticateUserForLogin(th.Context, user.Id, "", newPassword, "", "", false)
+	require.Nil(t, appErr)
+	require.Equal(t, user.Id, passwordLogin.Id)
+}
+
 func TestGetUserForLogin(t *testing.T) {
 	mainHelper.Parallel(t)
 	th := Setup(t).InitBasic(t)

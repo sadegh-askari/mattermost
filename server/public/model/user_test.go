@@ -346,6 +346,29 @@ func TestUserIsValid(t *testing.T) {
 	require.True(t, HasExpectedUserIsValidError(appErr, "roles_limit", user.Id, user.Roles), "expected user is valid error: %s", appErr.Error())
 }
 
+func TestUserAllowsDualPasswordAndOpenIDCredentials(t *testing.T) {
+	subject := "keycloak-user-subject"
+	user := &User{
+		Id:          NewId(),
+		CreateAt:    GetMillis(),
+		UpdateAt:    GetMillis(),
+		Username:    NewUsername(),
+		Email:       "dual-auth@example.com",
+		Password:    "hashed-local-password",
+		AuthService: ServiceOpenid,
+		AuthData:    &subject,
+	}
+
+	require.True(t, user.HasDualOpenIDCredentials())
+	require.True(t, user.CanAuthenticateWithPassword())
+	require.Nil(t, user.IsValid())
+
+	user.AuthService = ServiceGitlab
+	require.False(t, user.CanAuthenticateWithPassword())
+	appErr := user.IsValid()
+	require.True(t, HasExpectedUserIsValidError(appErr, "auth_data_pwd", user.Id, subject))
+}
+
 func TestUserSanitizeInput(t *testing.T) {
 	user := User{}
 	user.CreateAt = GetMillis()

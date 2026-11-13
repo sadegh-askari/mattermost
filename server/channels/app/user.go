@@ -483,7 +483,9 @@ func (a *App) CreateOAuthUser(rctx request.CTX, service string, userData io.Read
 
 	userByEmail, _ := a.ch.srv.userService.GetUserByEmail(user.Email)
 	if userByEmail != nil {
-		if userByEmail.AuthService == "" {
+		// Existing password accounts must be linked by the reviewed account map,
+		// not by an email claim supplied during OIDC login.
+		if userByEmail.AuthService == "" || userByEmail.AuthService == model.UserAuthServiceEmail {
 			return nil, model.NewAppError("CreateOAuthUser", "api.user.create_oauth_user.already_attached.app_error", map[string]any{"Service": service, "Auth": model.UserAuthServiceEmail}, "email="+user.Email, http.StatusBadRequest)
 		}
 		if provider.IsSameUser(rctx, userByEmail, user) {
@@ -957,7 +959,7 @@ func (a *App) ActivateMfa(userID, token string) *model.AppError {
 		return appErr
 	}
 
-	if user.AuthService != "" && user.AuthService != model.UserAuthServiceLdap {
+	if user.AuthService != "" && user.AuthService != model.UserAuthServiceLdap && !user.CanAuthenticateWithPassword() {
 		return model.NewAppError("ActivateMfa", "api.user.activate_mfa.email_and_ldap_only.app_error", nil, "", http.StatusBadRequest)
 	}
 
@@ -1148,7 +1150,7 @@ func (a *App) UpdatePasswordAsUser(rctx request.CTX, userID, currentPassword, ne
 		return model.NewAppError("updatePassword", "api.user.update_password.valid_account.app_error", nil, "", http.StatusBadRequest)
 	}
 
-	if user.AuthData != nil && *user.AuthData != "" {
+	if !user.CanAuthenticateWithPassword() {
 		return model.NewAppError("updatePassword", "api.user.update_password.oauth.app_error", nil, "auth_service="+user.AuthService, http.StatusBadRequest)
 	}
 
@@ -1881,7 +1883,7 @@ func (a *App) resetPasswordFromToken(rctx request.CTX, userSuppliedTokenString, 
 		return model.NewAppError("resetPassword", "api.user.reset_password.link_expired.app_error", nil, "", http.StatusBadRequest)
 	}
 
-	if user.IsSSOUser() {
+	if user.IsSSOUser() && !user.HasDualOpenIDCredentials() {
 		return model.NewAppError("ResetPasswordFromCode", "api.user.reset_password.sso.app_error", nil, "userId="+user.Id, http.StatusBadRequest)
 	}
 
@@ -1918,7 +1920,7 @@ func (a *App) SendPasswordReset(rctx request.CTX, email string, siteURL string) 
 		return false, model.NewAppError("SendPasswordReset", "api.user.send_password_reset.send.app_error", nil, "userId="+user.Id, http.StatusBadRequest)
 	}
 
-	if user.AuthData != nil && *user.AuthData != "" {
+	if !user.CanAuthenticateWithPassword() {
 		return false, model.NewAppError("SendPasswordReset", "api.user.send_password_reset.sso.app_error", nil, "userId="+user.Id, http.StatusBadRequest)
 	}
 

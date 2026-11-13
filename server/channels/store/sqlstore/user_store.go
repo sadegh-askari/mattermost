@@ -411,7 +411,7 @@ func (us SqlUserStore) UpdateUpdateAt(userId string) (int64, error) {
 func (us SqlUserStore) UpdatePassword(userId, hashedPassword string) error {
 	updateAt := model.GetMillis()
 
-	if _, err := us.GetMaster().Exec("UPDATE Users SET Password = ?, LastPasswordUpdate = ?, UpdateAt = ?, AuthData = NULL, AuthService = '', FailedAttempts = 0 WHERE Id = ?", hashedPassword, updateAt, updateAt, userId); err != nil {
+	if _, err := us.GetMaster().Exec("UPDATE Users SET Password = ?, LastPasswordUpdate = ?, UpdateAt = ?, AuthData = CASE WHEN AuthService = ? AND AuthData IS NOT NULL AND AuthData <> '' THEN AuthData ELSE NULL END, AuthService = CASE WHEN AuthService = ? AND AuthData IS NOT NULL AND AuthData <> '' THEN AuthService ELSE '' END, FailedAttempts = 0 WHERE Id = ?", hashedPassword, updateAt, updateAt, model.ServiceOpenid, model.ServiceOpenid, userId); err != nil {
 		return errors.Wrapf(err, "failed to update User with userId=%s", userId)
 	}
 
@@ -469,13 +469,16 @@ func (us SqlUserStore) UpdateAuthData(userId string, service string, authData *s
 	updateAt := model.GetMillis()
 
 	updateQuery := us.getQueryBuilder().Update("Users").
-		Set("Password", "").
-		Set("LastPasswordUpdate", updateAt).
 		Set("UpdateAt", updateAt).
 		Set("FailedAttempts", 0).
 		Set("AuthService", service).
 		Set("AuthData", authData).
 		Where(sq.Eq{"Id": userId})
+	if service != model.ServiceOpenid {
+		updateQuery = updateQuery.
+			Set("Password", "").
+			Set("LastPasswordUpdate", updateAt)
+	}
 
 	if email != "" {
 		updateQuery = updateQuery.Set("Email", sq.Expr("lower(?)", email))

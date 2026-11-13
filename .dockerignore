@@ -1,0 +1,6 @@
+**
+!Dockerfile.dual-auth
+!server/
+!server/**
+!third_party/
+!third_party/**
