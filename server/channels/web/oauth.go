@@ -542,7 +542,9 @@ func signupWithOAuth(c *Context, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !*c.App.Config().TeamSettings.EnableUserCreation {
+	// User creation is disabled for local signup and third-party OAuth providers,
+	// but Keycloak OIDC is the approved provisioning path for this server.
+	if !*c.App.Config().TeamSettings.EnableUserCreation && c.Params.Service != model.ServiceOpenid {
 		utils.RenderWebError(c.App.Config(), w, r, http.StatusBadRequest, url.Values{
 			"message": []string{i18n.T("api.oauth.singup_with_oauth.disabled.app_error")},
 		}, c.App.AsymmetricSigningKey())
